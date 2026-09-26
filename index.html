@@ -1,82 +1,407 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tangerine — a small browser for Mac</title>
-<meta name="description" content="Tangerine is an experimental WebKit-based browser for macOS.">
+<title>Wowser</title>
+<meta name="description" content="Wowser — a small browser for Mac.">
 <link rel="icon" href="icon-256.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@900&display=block">
 <style>
-  :root {
-    --bg: #fffdf9;
-    --fg: #2b2320;
-    --muted: #7a6f68;
-    --accent: #e8641b;
-    --card: #f7f1ea;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1c1917;
-      --fg: #f0e9e4;
-      --muted: #a89c94;
-      --accent: #ff8a3d;
-      --card: #29241f;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  }
-  main { max-width: 640px; margin: 0 auto; padding: 64px 24px 96px; }
-  .icon { width: 128px; height: 128px; display: block; }
-  h1 { font-size: 2.2rem; margin: 24px 0 8px; letter-spacing: -0.02em; }
-  .tagline { color: var(--muted); font-size: 1.15rem; margin: 0 0 32px; }
-  .download {
-    display: inline-block;
-    background: var(--accent);
-    color: #fff;
-    text-decoration: none;
-    font-weight: 600;
-    padding: 12px 24px;
-    border-radius: 10px;
-  }
-  .download:hover { filter: brightness(1.08); }
-  .fineprint { color: var(--muted); font-size: 0.85rem; margin-top: 12px; }
-  h2 { font-size: 1.1rem; margin: 48px 0 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-  ul.features { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
-  ul.features li { background: var(--card); border-radius: 10px; padding: 12px 16px; }
-  footer { color: var(--muted); font-size: 0.9rem; margin-top: 64px; }
-  a { color: var(--accent); }
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.sr:focus { clip: auto; width: auto; height: auto; margin: 0; padding: 8px 12px; left: 16px; top: 16px; background: #2d5bff; color: #fff; font: 900 14px "Unbounded", sans-serif; z-index: 1; }
 </style>
 </head>
 <body>
-<main>
-  <img class="icon" src="icon-256.png" alt="Tangerine app icon" width="128" height="128">
-  <h1>Tangerine</h1>
-  <p class="tagline">A small, experimental browser for Mac. Built on WebKit.</p>
+<h1 class="sr">Wowser</h1>
+<a class="sr" id="download" href="https://github.com/nate-parrott/tangerine-browser/releases/latest">Download Wowser for macOS</a>
+<canvas id="c" aria-hidden="true"></canvas>
+<script>
+(() => {
+  const DOWNLOAD_URL = document.getElementById('download').href;
+  const ACCENT = '#2d5bff';
+  const REACH = 0.3; // effect area, fraction of viewport
+  const FONT = { family: 'Unbounded', weight: 900, track: 0.03 };
+  const fontStr = (px) => FONT.weight + ' ' + px + 'px "' + FONT.family + '"';
+  const canvas = document.getElementById('c');
 
-  <a class="download" href="https://github.com/nate-parrott/tangerine-browser/releases/latest">Download for macOS</a>
-  <p class="fineprint">Free. Requires macOS 15 or later.</p>
+  // Boundary of a pixel mask, as closed loops of unit steps.
+  // Outer loops run clockwise (screen coords), holes counter-clockwise.
+  const traceMask = (m, mw, mh) => {
+    const has = (x, y) => x >= 0 && y >= 0 && x < mw && y < mh && m[y * mw + x] === 1;
+    const key = (x, y) => y * (mw + 1) + x;
+    const out = new Map();
+    const add = (x1, y1, x2, y2) => {
+      const k = key(x1, y1);
+      let list = out.get(k);
+      if (!list) { list = []; out.set(k, list); }
+      list.push({ x1, y1, x2, y2, dx: x2 - x1, dy: y2 - y1, used: false });
+    };
+    for (let y = 0; y < mh; y++) {
+      for (let x = 0; x < mw; x++) {
+        if (!has(x, y)) continue;
+        if (!has(x, y - 1)) add(x, y, x + 1, y);
+        if (!has(x + 1, y)) add(x + 1, y, x + 1, y + 1);
+        if (!has(x, y + 1)) add(x + 1, y + 1, x, y + 1);
+        if (!has(x - 1, y)) add(x, y + 1, x, y);
+      }
+    }
+    const loops = [];
+    for (const list of out.values()) {
+      for (const e0 of list) {
+        if (e0.used) continue;
+        const pts = [];
+        let e = e0;
+        while (!e.used) {
+          e.used = true;
+          pts.push([e.x1, e.y1]);
+          const cands = out.get(key(e.x2, e.y2)) || [];
+          if (!cands.length) break;
+          // Right turn first, so corner-touching pixels split into separate loops.
+          let best = cands[0], bs = 9;
+          for (const c of cands) {
+            const sc = (c.dx === -e.dy && c.dy === e.dx) ? 0 : (c.dx === e.dx && c.dy === e.dy) ? 1 : 2;
+            if (sc < bs) { bs = sc; best = c; }
+          }
+          e = best;
+        }
+        if (pts.length >= 12) loops.push(pts);
+      }
+    }
+    return loops;
+  };
 
-  <h2>What it does</h2>
-  <ul class="features">
-    <li><strong>Fast, familiar browsing</strong> — tabs, history, downloads, find-in-page, and a combined search-and-address bar, on top of Apple's WebKit engine.</li>
-    <li><strong>A tidy sidebar</strong> — tabs live in a sidebar, organized into spaces you can swipe between.</li>
-    <li><strong>Split view</strong> — put two pages side by side in one tab.</li>
-    <li><strong>Reader-friendly pages</strong> — content blocking and dark mode for websites.</li>
-    <li><strong>A few experiments</strong> — an optional built-in assistant and terminal tabs, for people who like that sort of thing.</li>
-  </ul>
+  // Knock the pixel staircase off a loop.
+  const smoothLoop = (pts, passes) => {
+    let p = pts;
+    const n = p.length;
+    for (let it = 0; it < passes; it++) {
+      const q = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const a = p[(i - 1 + n) % n], b = p[i], c = p[(i + 1) % n];
+        q[i] = [(a[0] + 2 * b[0] + c[0]) / 4, (a[1] + 2 * b[1] + c[1]) / 4];
+      }
+      p = q;
+    }
+    return p;
+  };
 
-  <h2>Honestly</h2>
-  <p>Tangerine is a personal project, made by one person, and it's early. It won't replace your main browser yet — but it's a nice place to poke around, and it gets better all the time.</p>
+  // Even arc-length samples; s = distance along the loop (cell units).
+  const resample = (pts, sp) => {
+    const P = [];
+    const n = pts.length;
+    let s = 0, carry = 0;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      const seg = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      let d = carry;
+      while (d < seg) {
+        const u = d / seg;
+        P.push({ x: a[0] + (b[0] - a[0]) * u, y: a[1] + (b[1] - a[1]) * u, s: s + d });
+        d += sp;
+      }
+      carry = d - seg;
+      s += seg;
+    }
+    const M = P.length;
+    for (let i = 0; i < M; i++) {
+      const p = P[(i - 1 + M) % M], q = P[(i + 1) % M];
+      const dx = q.x - p.x, dy = q.y - p.y;
+      const l = Math.hypot(dx, dy) || 1;
+      P[i].nx = dy / l;
+      P[i].ny = -dx / l;
+    }
+    return P;
+  };
 
-  <footer>
-    Made by <a href="https://github.com/nate-parrott">Nate Parrott</a> ·
-    <a href="https://github.com/nate-parrott/tangerine-browser">GitHub</a>
-  </footer>
-</main>
+  // Rasterize WOWSER across and DOWNLOAD down (sharing the O), trace outlines.
+  // Units: 1 cell = cap height / 5.
+  const build = () => {
+    const F = 220;
+    const fstr = fontStr(F);
+    const mc = document.createElement('canvas');
+    let mx = mc.getContext('2d', { willReadFrequently: true });
+    mx.font = fstr;
+    const capH = mx.measureText('H').actualBoundingBoxAscent || F * 0.7;
+    const track = F * FONT.track;
+    const pitch = capH * 1.22;
+
+    let x = 0;
+    const wow = [...'WOWSER'].map((ch) => {
+      const m = mx.measureText(ch);
+      const g = { ch, x, by: 0, L: m.actualBoundingBoxLeft, R: m.actualBoundingBoxRight };
+      x += m.width + track;
+      return g;
+    });
+    const o = wow[1];
+    const ocx = o.x + (o.R - o.L) / 2;
+    const dl = [...'DOWNLOAD'].map((ch, j) => {
+      const m = mx.measureText(ch);
+      const L = m.actualBoundingBoxLeft, R = m.actualBoundingBoxRight;
+      return { ch, x: ocx - (R - L) / 2, by: (j - 1) * pitch, L, R };
+    });
+    const arrowTop = 6 * pitch + capH * 0.3;
+
+    const all = wow.concat(dl);
+    const minX = Math.min(...all.map((g) => g.x - g.L));
+    const maxX = Math.max(...all.map((g) => g.x + g.R), ocx + capH * 0.6);
+    const top = -pitch - capH * 1.1;
+    const bottom = arrowTop + capH;
+    const pad = 16;
+    const mw = Math.ceil(maxX - minX + pad * 2), mh = Math.ceil(bottom - top + pad * 2);
+    const tx = pad - minX, ty = pad - top;
+    mc.width = mw; mc.height = mh;
+    mx = mc.getContext('2d', { willReadFrequently: true });
+
+    const readMask = () => {
+      const d = mx.getImageData(0, 0, mw, mh).data;
+      const m = new Uint8Array(mw * mh);
+      for (let i = 0; i < m.length; i++) m[i] = d[i * 4 + 3] > 127 ? 1 : 0;
+      return m;
+    };
+    const drawGlyphs = (list) => {
+      mx.clearRect(0, 0, mw, mh);
+      mx.fillStyle = '#fff';
+      mx.font = fstr;
+      mx.textBaseline = 'alphabetic';
+      for (const g of list) mx.fillText(g.ch, tx + g.x, ty + g.by);
+    };
+
+    drawGlyphs(wow);
+    const wowMask = readMask();
+
+    drawGlyphs(dl);
+    // Match the arrow's shaft to the font's stem: measure the L's upright.
+    let stem = capH * 0.24;
+    {
+      const Lg = dl[4];
+      const row = Math.round(ty + Lg.by - capH * 0.5);
+      const d = mx.getImageData(0, row, mw, 1).data;
+      let xi = Math.max(0, Math.floor(tx + Lg.x - Lg.L) - 2), run = 0;
+      while (xi < mw && d[xi * 4 + 3] <= 127) xi++;
+      while (xi < mw && d[xi * 4 + 3] > 127) { run++; xi++; }
+      if (run > 0) stem = Math.max(capH * 0.12, Math.min(capH * 0.4, run));
+    }
+    {
+      const cx = tx + ocx, t0 = ty + arrowTop, hh = capH * 0.5, aw = Math.max(capH * 0.9, stem * 3);
+      mx.beginPath();
+      mx.moveTo(cx - stem / 2, t0);
+      mx.lineTo(cx + stem / 2, t0);
+      mx.lineTo(cx + stem / 2, t0 + capH - hh);
+      mx.lineTo(cx + aw / 2, t0 + capH - hh);
+      mx.lineTo(cx, t0 + capH);
+      mx.lineTo(cx - aw / 2, t0 + capH - hh);
+      mx.lineTo(cx - stem / 2, t0 + capH - hh);
+      mx.closePath();
+      mx.fill();
+    }
+    const dlMask = readMask();
+
+    const u = capH / 5;
+    const toLoops = (mask, sp) => traceMask(mask, mw, mh).map((raw) =>
+      resample(smoothLoop(raw, 3).map((p) => [p[0] / u, p[1] / u]), sp)
+    );
+    const wowLoops = toLoops(wowMask, 1 / 8);
+    const dlLoops = toLoops(dlMask, 1 / 12);
+
+    let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+    for (const P of dlLoops) for (const p of P) {
+      if (p.x < bx0) bx0 = p.x; if (p.x > bx1) bx1 = p.x;
+      if (p.y < by0) by0 = p.y; if (p.y > by1) by1 = p.y;
+    }
+    return {
+      wowLoops, dlLoops,
+      CW: mw / u, CH: mh / u,
+      box: { x0: bx0 - 0.5, x1: bx1 + 0.5, y0: by0 - 0.5, y1: by1 + 0.5 }
+    };
+  };
+
+  let geo = null;
+  Promise.race([
+    document.fonts.load(fontStr(220), 'WOSERDNLA'),
+    new Promise((r) => setTimeout(r, 3000))
+  ]).catch(() => {}).then(() => { geo = build(); });
+
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, dpr = 1;
+  const resize = () => {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.max(1, Math.round(W * dpr));
+    canvas.height = Math.max(1, Math.round(H * dpr));
+  };
+  window.addEventListener('resize', resize);
+  resize();
+
+  const st = { tx: 0, ty: 0, mx: 0, my: 0, inside: false, seen: false, pres: 0, over: false, wipe: 0, wox: 0, woy: 0 };
+  const onMove = (e) => {
+    st.tx = e.clientX;
+    st.ty = e.clientY;
+    if (!st.seen) { st.mx = st.tx; st.my = st.ty; st.seen = true; }
+    st.inside = true;
+  };
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerdown', onMove);
+  canvas.addEventListener('pointerleave', () => { st.inside = false; });
+
+  let box = null; // DOWNLOAD hit box in screen px, updated per frame
+  const hit = (x, y) => box && x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1;
+  canvas.addEventListener('click', (e) => {
+    if (hit(e.clientX, e.clientY)) window.location.href = DOWNLOAD_URL;
+  });
+
+  const ease = (p) => p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+
+  let last = 0;
+  const frame = (now) => {
+    requestAnimationFrame(frame);
+    const t = now / 1000;
+    const dt = last ? Math.min(0.05, t - last) : 0.016;
+    last = t;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    if (!geo) return;
+
+    const k = Math.min(1, dt * 14);
+    st.mx += (st.tx - st.mx) * k;
+    st.my += (st.ty - st.my) * k;
+    st.pres += ((st.inside ? 1 : 0) - st.pres) * Math.min(1, dt * 5);
+
+    const cell = Math.min(W * 0.82 / geo.CW, H * 0.86 / geo.CH);
+    const ox = (W - geo.CW * cell) / 2, oy = (H - geo.CH * cell) / 2;
+    const R = Math.sqrt(REACH * W * H / Math.PI);
+    const infl = (x, y) => {
+      const d = Math.hypot(x - st.mx, y - st.my);
+      if (d >= R) return 0;
+      const u = 1 - d / R;
+      return u * u * (3 - 2 * u) * st.pres;
+    };
+
+    // Hover target: the DOWNLOAD column, arrow included.
+    const bx0 = ox + geo.box.x0 * cell, bx1 = ox + geo.box.x1 * cell;
+    const by0 = oy + geo.box.y0 * cell, by1 = oy + geo.box.y1 * cell;
+    box = { x0: bx0, x1: bx1, y0: by0, y1: by1 };
+    const over = st.inside && hit(st.tx, st.ty);
+    if (over !== st.over) {
+      st.over = over;
+      if (st.wipe <= 0.001 || st.wipe >= 0.999) { st.wox = st.tx; st.woy = st.ty; }
+      canvas.style.cursor = over ? 'none' : '';
+    }
+    st.wipe = Math.max(0, Math.min(1, st.wipe + (over ? 1 : -1) * dt / 0.55));
+
+    const lw = Math.max(1.5, cell * 0.11);
+
+    // WOWSER: bouba. Inflate outward, then relax toward neighbours so corners go soft.
+    const Ab = cell * 0.85;
+    const wowPath = new Path2D();
+    for (const P of geo.wowLoops) {
+      const M = P.length;
+      let xs = new Float32Array(M), ys = new Float32Array(M);
+      const fs = new Float32Array(M);
+      let fmax = 0;
+      for (let i = 0; i < M; i++) {
+        const p = P[i];
+        const bx = ox + p.x * cell, by = oy + p.y * cell;
+        const f = infl(bx, by);
+        fs[i] = f;
+        if (f > fmax) fmax = f;
+        const a = Ab * f * (0.85 + 0.15 * Math.sin(t * 1.7 + p.s * 0.9));
+        xs[i] = bx + p.nx * a;
+        ys[i] = by + p.ny * a;
+      }
+      if (fmax > 0.001) {
+        for (let it = 0; it < 10; it++) {
+          const nx = new Float32Array(M), ny = new Float32Array(M);
+          for (let i = 0; i < M; i++) {
+            const a = (i - 2 + M) % M, b = (i - 1 + M) % M, c = (i + 1) % M, d = (i + 2) % M;
+            const w = fs[i] * 0.9;
+            nx[i] = xs[i] + w * ((xs[a] + xs[b] + xs[c] + xs[d]) / 4 - xs[i]);
+            ny[i] = ys[i] + w * ((ys[a] + ys[b] + ys[c] + ys[d]) / 4 - ys[i]);
+          }
+          xs = nx; ys = ny;
+        }
+      }
+      wowPath.moveTo((xs[M - 1] + xs[0]) / 2, (ys[M - 1] + ys[0]) / 2);
+      for (let i = 0; i < M; i++) {
+        const j = (i + 1) % M;
+        wowPath.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[j]) / 2, (ys[i] + ys[j]) / 2);
+      }
+      wowPath.closePath();
+    }
+    ctx.lineWidth = lw;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#fff';
+    ctx.stroke(wowPath);
+
+    // DOWNLOAD: kiki. Fixed spike positions, amplitude jittering in time.
+    const Ak = cell * 0.6, lam = 0.5;
+    const dlPath = new Path2D();
+    for (const P of geo.dlLoops) {
+      const M = P.length;
+      for (let i = 0; i < M; i++) {
+        const p = P[i];
+        const bx = ox + p.x * cell, by = oy + p.y * cell;
+        const f = infl(bx, by);
+        let x = bx, y = by;
+        if (f > 0) {
+          const v = p.s / lam - Math.floor(p.s / lam);
+          const tri = 1 - 2 * Math.min(v, 1 - v);
+          const a = Ak * f * tri * (0.55 + 0.45 * Math.sin(t * 12 + p.s * 2.1));
+          x += p.nx * a;
+          y += p.ny * a;
+        }
+        if (i === 0) dlPath.moveTo(x, y); else dlPath.lineTo(x, y);
+      }
+      dlPath.closePath();
+    }
+    ctx.lineJoin = 'miter';
+    ctx.miterLimit = 8;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke(dlPath);
+
+    if (st.wipe > 0) {
+      const far = Math.max(
+        Math.hypot(bx0 - st.wox, by0 - st.woy), Math.hypot(bx1 - st.wox, by0 - st.woy),
+        Math.hypot(bx0 - st.wox, by1 - st.woy), Math.hypot(bx1 - st.wox, by1 - st.woy)
+      );
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(st.wox, st.woy, ease(st.wipe) * far, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillStyle = ACCENT;
+      ctx.fill(dlPath);
+      ctx.strokeStyle = ACCENT;
+      ctx.stroke(dlPath);
+      ctx.restore();
+    }
+
+    if (over) {
+      // "DL" cursor tag, centred on the pointer.
+      ctx.font = fontStr(15);
+      ctx.textBaseline = 'alphabetic';
+      const m = ctx.measureText('DL');
+      const cap = m.actualBoundingBoxAscent || 11;
+      const pad = 7;
+      const w = Math.ceil(m.actualBoundingBoxLeft + m.actualBoundingBoxRight) + pad * 2;
+      const h = Math.ceil(cap) + pad * 2;
+      const x0 = Math.round(st.tx - w / 2), y0 = Math.round(st.ty - h / 2);
+      ctx.fillStyle = ACCENT;
+      ctx.fillRect(x0, y0, w, h);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#fff';
+      ctx.strokeRect(x0 + 0.75, y0 + 0.75, w - 1.5, h - 1.5);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('DL', x0 + pad + m.actualBoundingBoxLeft, y0 + pad + cap);
+    }
+  };
+  requestAnimationFrame(frame);
+})();
+</script>
 </body>
 </html>
